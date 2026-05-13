@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="hu">
+
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <?!= include('styles'); ?>
+</head>
+
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <nav id="sidebar">
+      <div class="logo">
+        <span class="logo-icon">🔧</span>
+        <span class="logo-text">Maintenance</span>
+      </div>
+
+      <div class="nav-section">
+        <a href="#" class="nav-item active" data-page="curative">
+          <span class="nav-icon">📅</span>
+          <span>Kuratív</span>
+        </a>
+        <a href="#" class="nav-item" data-page="preventive">
+          <span class="nav-icon">🛠️</span>
+          <span>Preventív</span>
+        </a>
+      </div>
+
+      <div class="nav-section" id="admin-nav" style="display:none;">
+        <div class="nav-label">Admin</div>
+        <a href="#" class="nav-item" data-page="users">
+          <span class="nav-icon">👥</span>
+          <span>Felhasználók</span>
+        </a>
+      </div>
+
+      <div class="user-info">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-details">
+          <div class="user-name" id="user-name">Betöltés...</div>
+          <div class="user-role" id="user-role"></div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main id="main-content">
+      <!-- Curative Page -->
+      <div id="page-curative" class="page active">
+        <div class="page-header">
+          <div>
+            <h1>Kuratív feladatok</h1>
+            <p class="subtitle">Eseti jellegű, nem tervezett beavatkozások</p>
+          </div>
+          <button class="btn btn-primary" id="btn-new-curative" style="display:none;">+ Új feladat</button>
+        </div>
+
+        <!-- Calendar controls -->
+        <div class="calendar-controls">
+          <div class="calendar-nav">
+            <button class="btn btn-icon" id="prev-month">◀</button>
+            <span class="calendar-month" id="current-month">2026. április</span>
+            <button class="btn btn-icon" id="next-month">▶</button>
+          </div>
+          <select class="select" id="filter-zone-calendar">
+            <option value="">Minden főterület</option>
+            <option value="APU 1">APU 1</option>
+            <option value="APU 2">APU 2</option>
+            <option value="APU 3">APU 3</option>
+            <option value="PROJEKT">PROJEKT</option>
+            <option value="TMK">TMK</option>
+          </select>
+        </div>
+
+        <!-- Calendar grid -->
+        <div class="calendar-container">
+          <div class="calendar-header">
+            <div>Hét</div>
+            <div>Ked</div>
+            <div>Sze</div>
+            <div>Csü</div>
+            <div>Pén</div>
+            <div>Szo</div>
+            <div>Vas</div>
+          </div>
+          <div class="calendar-grid" id="calendar-grid">
+            <!-- JS-ből töltjük -->
+          </div>
+        </div>
+
+        <div class="legend">
+          <div class="legend-item"><span class="legend-color" style="background:#dcfce7"></span>Workstation</div>
+          <div class="legend-item"><span class="legend-color" style="background:#dbeafe"></span>Szék</div>
+          <div class="legend-item"><span class="legend-color" style="background:#fef3c7"></span>Gép</div>
+          <div class="legend-item"><span class="legend-color" style="background:#fee2e2"></span>Ionizátor</div>
+        </div>
+      </div>
+
+      <!-- Preventive Page -->
+      <div id="page-preventive" class="page">
+        <div class="page-header">
+          <div>
+            <h1>Preventív karbantartás</h1>
+            <p class="subtitle">Tervezett, ütemezett feladatok</p>
+          </div>
+          <button class="btn btn-primary" id="btn-new-asset" style="display:none;">+ Új eszköz</button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Összes eszköz</div>
+            <div class="stat-value" id="stat-total">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Lejáró (7 nap)</div>
+            <div class="stat-value stat-warning" id="stat-due">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Késésben</div>
+            <div class="stat-value stat-danger" id="stat-overdue">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Kész (hónap)</div>
+            <div class="stat-value stat-success" id="stat-completed">-</div>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filters">
+          <select class="select" id="filter-main-zone">
+            <option value="">Minden főterület</option>
+            <option value="APU 1">APU 1</option>
+            <option value="APU 2">APU 2</option>
+            <option value="APU 3">APU 3</option>
+            <option value="PROJEKT">PROJEKT</option>
+            <option value="TMK">TMK</option>
+          </select>
+          <select class="select" id="filter-sub-zone" style="display:none;">
+            <option value="">Minden alterület</option>
+          </select>
+          <select class="select" id="filter-type">
+            <option value="">Minden típus</option>
+          </select>
+          <select class="select" id="filter-status">
+            <option value="">Minden státusz</option>
+            <option value="due">Lejáró / Késésben</option>
+            <option value="ok">Rendben</option>
+          </select>
+          <input type="search" class="input search-input" id="search-assets" placeholder="Keresés ID vagy név...">
+        </div>
+
+        <!-- Assets table -->
+        <div class="table-container">
+          <table class="table" id="assets-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Név / Terület</th>
+                <th>Típus</th>
+                <th>Köv. karbantartás</th>
+                <th>Státusz</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="assets-tbody">
+              <!-- JS-ből töltjük -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Asset Detail Page -->
+      <div id="page-asset-detail" class="page">
+        <div class="page-header">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button class="btn btn-icon" id="btn-back-to-list">←</button>
+            <div>
+              <h1 id="asset-detail-title">-</h1>
+              <p class="subtitle" id="asset-detail-subtitle">-</p>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="btn-new-entry" style="display:none;">+ Új bejegyzés</button>
+        </div>
+
+        <!-- Asset info cards -->
+        <div class="info-cards" id="asset-info-cards">
+          <!-- JS-ből töltjük -->
+        </div>
+
+        <!-- Drive link -->
+        <div class="drive-link-card" id="drive-link-card" style="display:none;">
+          <div class="drive-icon">📁</div>
+          <div class="drive-info">
+            <div class="drive-title">Fotók és dokumentumok</div>
+            <div class="drive-url" id="drive-url">-</div>
+          </div>
+          <a href="#" class="btn btn-secondary" id="drive-link-btn" target="_blank">Megnyitás ↗</a>
+        </div>
+
+        <!-- Add entry form -->
+        <div class="entry-form" id="entry-form" style="display:none;">
+          <h3>Új bejegyzés</h3>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Típus *</label>
+              <select class="select" id="entry-task-type">
+                <option value="preventív">Preventív karbantartás</option>
+                <option value="kuratív">Kuratív (eseti)</option>
+                <option value="ESD mérés">ESD mérés</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Kategória *</label>
+              <select class="select" id="entry-category">
+                <!-- JS-ből töltjük -->
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Dátum *</label>
+              <input type="date" class="input" id="entry-date">
+            </div>
+            <div class="form-group">
+              <label>Fotó link (opcionális)</label>
+              <input type="url" class="input" id="entry-photo" placeholder="https://drive.google.com/...">
+            </div>
+          </div>
+          <!-- ESD mérési form (dinamikus, asset típus szerint) -->
+          <div id="esd-measurement-form" style="display:none;">
+            <div id="esd-fields-container"></div>
+          </div>
+          <div class="form-group" id="entry-description-group">
+            <label>Elvégzett munka leírása *</label>
+            <textarea class="input textarea" id="entry-description" placeholder="Mit csináltál..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>Megjegyzés (opcionális)</label>
+            <textarea class="input textarea" id="entry-notes" placeholder="További megjegyzések..." style="min-height:60px;"></textarea>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-secondary" id="btn-cancel-entry">Mégse</button>
+            <button class="btn btn-primary" id="btn-save-entry">Mentés</button>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div class="section-header">
+          <h2>Előzmények</h2>
+        </div>
+        <div class="history-list" id="history-list">
+          <!-- JS-ből töltjük -->
+        </div>
+      </div>
+
+      <!-- Users Page (admin only) -->
+      <div id="page-users" class="page">
+        <div class="page-header">
+          <div>
+            <h1>Felhasználók</h1>
+            <p class="subtitle">Admin és readonly felhasználók kezelése</p>
+          </div>
+          <button class="btn btn-primary" id="btn-new-user">+ Új felhasználó</button>
+        </div>
+
+        <div class="table-container">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Név</th>
+                <th>Szerepkör</th>
+                <th>Értesítés</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <!-- JS-ből töltjük -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: New Task -->
+  <div class="modal" id="modal-new-task">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Új kuratív feladat</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Eszköz *</label>
+          <select class="select" id="task-asset">
+            <!-- JS-ből töltjük -->
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Kategória *</label>
+          <select class="select" id="task-category">
+            <!-- JS-ből töltjük -->
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Dátum *</label>
+          <input type="date" class="input" id="task-date">
+        </div>
+        <div class="form-group">
+          <label>Leírás *</label>
+          <textarea class="input textarea" id="task-description" placeholder="Mi történt / mit cseréltél..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Google Drive link (opcionális)</label>
+          <input type="url" class="input" id="task-photo" placeholder="https://drive.google.com/...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-task">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New Asset -->
+  <div class="modal" id="modal-new-asset">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Új eszköz</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Eszköz ID *</label>
+            <input type="text" class="input" id="asset-id" placeholder="pl. WS-001">
+          </div>
+          <div class="form-group">
+            <label>Név *</label>
+            <input type="text" class="input" id="asset-name" placeholder="pl. Workstation #1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Típus *</label>
+            <select class="select" id="asset-type">
+              <!-- JS-ből töltjük -->
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Főterület *</label>
+            <select class="select" id="asset-main-zone">
+              <option value="">Válassz főterületet...</option>
+              <option value="APU 1">APU 1</option>
+              <option value="APU 2">APU 2</option>
+              <option value="APU 3">APU 3</option>
+              <option value="PROJEKT">PROJEKT</option>
+              <option value="TMK">TMK</option>
+            </select>
+          </div>
+          <div class="form-group" id="asset-sub-zone-group" style="display:none;">
+            <label>Alterület *</label>
+            <select class="select" id="asset-sub-zone">
+              <option value="">Válassz alterületet...</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>ESD mérési ciklus</label>
+            <select class="select" id="asset-cycle-months">
+              <option value="0">Nincs ESD ciklus</option>
+              <option value="1">1 hónap</option>
+              <option value="2">2 hónap</option>
+              <option value="3" selected>3 hónap</option>
+              <option value="4">4 hónap</option>
+              <option value="6">6 hónap</option>
+              <option value="9">9 hónap</option>
+              <option value="12">12 hónap</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Google Drive mappa link</label>
+            <input type="url" class="input" id="asset-drive" placeholder="https://drive.google.com/...">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-asset">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New User -->
+  <div class="modal" id="modal-new-user">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Új felhasználó</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Email *</label>
+          <input type="email" class="input" id="user-email" placeholder="pelda@valeo.com">
+        </div>
+        <div class="form-group">
+          <label>Név *</label>
+          <input type="text" class="input" id="user-name-input" placeholder="Teljes név">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Szerepkör</label>
+            <select class="select" id="user-role-select">
+              <option value="readonly">Readonly</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Email értesítés</label>
+            <select class="select" id="user-notify">
+              <option value="false">Nem</option>
+              <option value="true">Igen</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-user">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Modal: Edit Asset -->
+  <div class="modal" id="modal-edit-asset">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Eszköz szerkesztése</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Eszköz ID</label>
+          <input type="text" class="input" id="edit-asset-id" disabled style="opacity:0.6;">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Név *</label>
+            <input type="text" class="input" id="edit-asset-name">
+          </div>
+          <div class="form-group">
+            <label>Típus *</label>
+            <select class="select" id="edit-asset-type"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Főterület *</label>
+            <select class="select" id="edit-asset-main-zone">
+              <option value="APU 1">APU 1</option>
+              <option value="APU 2">APU 2</option>
+              <option value="APU 3">APU 3</option>
+              <option value="PROJEKT">PROJEKT</option>
+              <option value="TMK">TMK</option>
+            </select>
+          </div>
+          <div class="form-group" id="edit-asset-sub-zone-group" style="display:none;">
+            <label>Alterület *</label>
+            <select class="select" id="edit-asset-sub-zone">
+              <option value="">Válassz alterületet...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>ESD mérési ciklus</label>
+            <select class="select" id="edit-asset-cycle-months">
+              <option value="0">Nincs ESD ciklus</option>
+              <option value="1">1 hónap</option>
+              <option value="2">2 hónap</option>
+              <option value="3">3 hónap</option>
+              <option value="4">4 hónap</option>
+              <option value="6">6 hónap</option>
+              <option value="9">9 hónap</option>
+              <option value="12">12 hónap</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Google Drive mappa link</label>
+          <input type="url" class="input" id="edit-asset-drive" placeholder="https://drive.google.com/...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger btn-sm" id="btn-delete-asset" style="margin-right:auto;">Törlés</button>
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-edit-asset">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit User -->
+  <div class="modal" id="modal-edit-user">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Felhasználó szerkesztése</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="text" class="input" id="edit-user-email" disabled style="opacity:0.6;">
+        </div>
+        <div class="form-group">
+          <label>Név *</label>
+          <input type="text" class="input" id="edit-user-name">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Szerepkör</label>
+            <select class="select" id="edit-user-role">
+            <option value="readonly">Readonly</option>
+            <option value="admin">Admin</option>
+          </select>
+          </div>
+          <div class="form-group">
+            <label>Email értesítés</label>
+            <select class="select" id="edit-user-notify">
+            <option value="false">Nem</option>
+            <option value="true">Igen</option>
+          </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-edit-user">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Task -->
+  <div class="modal" id="modal-edit-task">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Bejegyzés szerkesztése</h2>
+        <button class="btn-close" data-close-modal>&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Típus</label>
+            <select class="select" id="edit-task-type">
+              <option value="preventív">Preventív karbantartás</option>
+              <option value="kuratív">Kuratív (eseti)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Kategória</label>
+            <select class="select" id="edit-task-category"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Dátum</label>
+          <input type="date" class="input" id="edit-task-date">
+        </div>
+        <!-- ESD mérési form (dinamikus, asset típus szerint) -->
+        <div id="esd-measurement-form" style="display:none;">
+          <div id="esd-fields-container"></div>
+        </div>
+        <div class="form-group">
+          <label>Leírás</label>
+          <textarea class="input textarea" id="edit-task-description"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Fotó link (opcionális)</label>
+          <input type="url" class="input" id="edit-task-photo" placeholder="https://drive.google.com/...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close-modal>Mégse</button>
+        <button class="btn btn-primary" id="btn-save-edit-task">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" id="loading">
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <?!= include('scripts'); ?>
+</body>
+
+</html>
