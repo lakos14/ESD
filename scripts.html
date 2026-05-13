@@ -1,0 +1,1140 @@
+<script>
+// ============ GLOBÁLIS ÁLLAPOT ============
+let currentUser = null;
+let currentAssetId = null;
+let currentYear  = new Date().getFullYear();
+let currentMonth = new Date().getMonth() + 1;
+
+let cachedAssets         = [];
+let cachedStats          = {};
+let cachedZones          = [];
+let cachedAssetTypes     = [];
+let cachedTaskCategories = [];
+let editingUserEmail     = null;
+
+const MONTHS_HU = [
+  '', 'január', 'február', 'március', 'április', 'május', 'június',
+  'július', 'augusztus', 'szeptember', 'október', 'november', 'december'
+];
+
+
+// ============ ESD MÉRÉSI STRUKTÚRA ============
+const ESD_FIELDS = {
+  'Workstation': {
+    fixed: [
+      { id: 'asztallap',    label: 'Asztallap',    limit: '1×10⁶ – 1×10⁹ Ω' },
+      { id: 'polc',         label: 'Polc',          limit: '1×10⁶ – 1×10⁹ Ω' },
+      { id: 'csuklópánt',   label: 'Csuklópánt',    limit: '7.5×10⁵ – 3.5×10⁷ Ω' },
+      { id: 'földelődoboz', label: 'Földelődoboz',  limit: '<1×10⁹ Ω' }
+    ],
+    dynamic: false
+  },
+  'Ionizátor': {
+    fixed: [
+      { id: 'dt_pos', label: 'Discharge Time Pozitív', limit: '<20 s' },
+      { id: 'dt_neg', label: 'Discharge Time Negatív', limit: '<20 s' },
+      { id: 'offset', label: 'Offset Value',            limit: '±35 V' }
+    ],
+    dynamic: false
+  },
+  'Szék': {
+    fixed: [{ id: 'ellenallas', label: 'Ellenállás', limit: '1×10⁵ – 1×10⁸ Ω' }],
+    dynamic: false
+  },
+  'Kocsi': {
+    fixed: [{ id: 'ellenallas', label: 'Ellenállás', limit: '1×10⁵ – 1×10⁸ Ω' }],
+    dynamic: false
+  },
+  'Gép': {
+    fixed: [{ id: 'metal_parts', label: 'Metal Parts', limit: '<1 Ω' }],
+    dynamic: true
+  },
+  'Padló': {
+    fixed: [
+      { id: 'system',         label: 'System',         limit: '1×10⁵ – 1×10⁸ Ω' },
+      { id: 'grounding',      label: 'Grounding',      limit: '1×10⁵ – 1×10⁸ Ω' },
+      { id: 'point_to_point', label: 'Point to Point', limit: '1×10⁵ – 1×10⁸ Ω' },
+      { id: 'walking_test',   label: 'Walking Test',   limit: '', optional: true }
+    ],
+    dynamic: false
+  },
+  'Csomagolóanyag': { fixed: [], dynamic: true },
+  'Egyéb':          { fixed: [], dynamic: true }
+};
+
+// ============ TERÜLETEK STRUKTÚRÁJA ============
+const ZONE_STRUCTURE = {
+  'APU 1':  ['5DH','5AGEN3','Kaizen','BMW 11kW THT','BMW 11kW PreAssembly','BMW 11kW FinalAssembly'],
+  'APU 2':  ['Daimler Inverter','Daimler THT','Volkswagen Base +','Volkswagen Base -',
+             'SMT Line 10','SMT Line 11','SMT Line 12','SMT Line 13',
+             'SMT ICT 1','SMT ICT 2','SMT ICT 3','SMT Depanel',
+             'SMT Lakkozó 1','SMT Lakkozó 2','SMT Lakkozó 3','SMT FCT'],
+  'APU 3':  ['Daimler System','Stellantis DCDC'],
+  'PROJEKT': [],
+  'TMK':     []
+};
+
+// Zone string formátum: "APU 1 / 5DH"  |  "PROJEKT"  |  "TMK"
+function buildZoneString(main, sub) {
+  if (!main) return '';
+  const subs = ZONE_STRUCTURE[main] || [];
+  return subs.length > 0 ? (main + ' / ' + sub) : main;
+}
+
+function parseZone(zoneStr) {
+  if (!zoneStr) return { main: '', sub: '' };
+  const sep = zoneStr.indexOf(' / ');
+  if (sep === -1) return { main: zoneStr, sub: '' };
+  return { main: zoneStr.substring(0, sep), sub: zoneStr.substring(sep + 3) };
+}
+
+function zoneMatchesFilter(assetZone, filterMain) {
+  if (!filterMain) return true;
+  const subs = ZONE_STRUCTURE[filterMain] || [];
+  if (subs.length === 0) return assetZone === filterMain;          // PROJEKT, TMK
+  return assetZone.startsWith(filterMain + ' /');                  // APU 1 / ...
+}
+
+// Alterület select feltöltése adott főterülethez
+function fillSubZones(mainZone, subSelectId, groupId, currentSub = '') {
+  const subSelect = document.getElementById(subSelectId);
+  const group     = document.getElementById(groupId);
+  const subs      = ZONE_STRUCTURE[mainZone] || [];
+
+  if (subs.length === 0) {
+    group.style.display = 'none';
+    subSelect.innerHTML = '';
+    return;
+  }
+
+  group.style.display = 'block';
+  subSelect.innerHTML = '<option value="">Válassz alterületet...</option>';
+  subs.forEach(sub => {
+    const opt = document.createElement('option');
+    opt.value = sub; opt.textContent = sub;
+    if (sub === currentSub) opt.selected = true;
+    subSelect.appendChild(opt);
+  });
+}
+
+// ============ INICIALIZÁLÁS ============
+document.addEventListener('DOMContentLoaded', init);
+
+async function init() {
+  showLoading();
+  try {
+    const dataJson = await runAsync('getInitialDataJson');
+    const data     = dataJson ? JSON.parse(dataJson) : null;
+    if (!data) throw new Error('Nem sikerült betölteni az adatokat');
+
+    currentUser          = data.user;
+    cachedAssets         = data.assets        || [];
+    cachedStats          = data.stats         || {};
+    cachedZones          = data.zones         || [];
+    cachedAssetTypes     = data.assetTypes    || [];
+    cachedTaskCategories = data.taskCategories || [];
+
+    // Fejlesztés kategória hozzáadása ha még nincs
+    if (!cachedTaskCategories.includes('Fejlesztés')) {
+      cachedTaskCategories.push('Fejlesztés');
+    }
+
+    updateUserUI();
+    populateDropdowns();
+    setupEventListeners();
+    setupZoneSelectors();
+
+    document.querySelector('[data-page="preventive"]').classList.add('active');
+    document.querySelector('[data-page="curative"]').classList.remove('active');
+    document.getElementById('page-curative').classList.remove('active');
+    document.getElementById('page-preventive').classList.add('active');
+    renderPreventivePage();
+
+  } catch (error) {
+    console.error('Init error:', error);
+    showToast('Hiba a betöltés során: ' + error.message, 'error');
+  }
+  hideLoading();
+}
+
+function populateDropdowns() {
+  // Típusok (asset típus selectek - NEM zone)
+  document.querySelectorAll('#filter-type, #asset-type, #edit-asset-type').forEach(sel => {
+    if (!sel) return;
+    cachedAssetTypes.forEach(type => {
+      const opt = document.createElement('option');
+      opt.value = type; opt.textContent = type;
+      sel.appendChild(opt);
+    });
+  });
+
+  // Kategóriák
+  document.querySelectorAll('#task-category, #entry-category').forEach(sel => {
+    if (!sel) return;
+    cachedTaskCategories.forEach(cat => {
+      const opt = document.createElement('option');
+      opt.value = cat; opt.textContent = cat;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+// Zone selectorok event listenerei
+function setupZoneSelectors() {
+  // Preventív szűrő főterület → alterület
+  const filterMain = document.getElementById('filter-main-zone');
+  const filterSub  = document.getElementById('filter-sub-zone');
+  if (filterMain) {
+    filterMain.addEventListener('change', () => {
+      const main = filterMain.value;
+      const subs = ZONE_STRUCTURE[main] || [];
+      if (main && subs.length > 0) {
+        filterSub.style.display = 'block';
+        filterSub.innerHTML = '<option value="">Minden alterület</option>';
+        subs.forEach(sub => {
+          const opt = document.createElement('option');
+          opt.value = sub; opt.textContent = sub;
+          filterSub.appendChild(opt);
+        });
+      } else {
+        filterSub.style.display = 'none';
+        filterSub.innerHTML = '<option value="">Minden alterület</option>';
+      }
+      renderPreventivePage();
+    });
+    filterSub.addEventListener('change', renderPreventivePage);
+  }
+
+  // Új eszköz főterület → alterület
+  const assetMain = document.getElementById('asset-main-zone');
+  if (assetMain) {
+    assetMain.addEventListener('change', () =>
+      fillSubZones(assetMain.value, 'asset-sub-zone', 'asset-sub-zone-group')
+    );
+  }
+
+  // Edit eszköz főterület → alterület
+  const editMain = document.getElementById('edit-asset-main-zone');
+  if (editMain) {
+    editMain.addEventListener('change', () =>
+      fillSubZones(editMain.value, 'edit-asset-sub-zone', 'edit-asset-sub-zone-group')
+    );
+  }
+}
+
+function updateUserUI() {
+  document.getElementById('user-avatar').textContent = currentUser.name.charAt(0).toUpperCase();
+  document.getElementById('user-name').textContent   = currentUser.name;
+  document.getElementById('user-role').textContent   = currentUser.role === 'admin' ? 'Adminisztrátor' : 'Csak olvasás';
+
+  if (currentUser.role === 'admin') {
+    document.getElementById('admin-nav').style.display        = 'block';
+    document.getElementById('btn-new-curative').style.display = 'block';
+    document.getElementById('btn-new-asset').style.display    = 'block';
+    document.getElementById('btn-new-entry').style.display    = 'block';
+  }
+}
+
+// ============ NAVIGÁCIÓ ============
+function setupEventListeners() {
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await navigateTo(item.dataset.page);
+    });
+  });
+
+  // ESD task type váltás
+  document.getElementById('entry-task-type').addEventListener('change', renderEsdFields);
+  document.getElementById('prev-month').addEventListener('click', () => changeMonth(-1));
+  document.getElementById('next-month').addEventListener('click', () => changeMonth(1));
+
+  document.getElementById('filter-type').addEventListener('change', renderPreventivePage);
+  document.getElementById('filter-status').addEventListener('change', renderPreventivePage);
+  document.getElementById('search-assets').addEventListener('input', debounce(renderPreventivePage, 300));
+  document.getElementById('filter-zone-calendar').addEventListener('change', loadCalendar);
+
+  document.querySelectorAll('[data-close-modal]').forEach(btn => {
+    btn.addEventListener('click', () => btn.closest('.modal').classList.remove('active'));
+  });
+  document.querySelectorAll('.modal').forEach(modal => {
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
+  });
+
+  document.getElementById('btn-new-curative').addEventListener('click', openNewTaskModal);
+  document.getElementById('btn-save-task').addEventListener('click', saveTask);
+
+  document.getElementById('btn-new-asset').addEventListener('click', () => {
+    // Reset
+    document.getElementById('asset-main-zone').value = '';
+    document.getElementById('asset-sub-zone-group').style.display = 'none';
+    document.getElementById('modal-new-asset').classList.add('active');
+  });
+  document.getElementById('btn-save-asset').addEventListener('click', saveAsset);
+
+  document.getElementById('btn-save-edit-asset').addEventListener('click', saveEditAsset);
+  document.getElementById('btn-delete-asset').addEventListener('click', deleteAssetConfirm);
+
+  document.getElementById('btn-new-user').addEventListener('click', () => {
+    document.getElementById('modal-new-user').classList.add('active');
+  });
+  document.getElementById('btn-save-user').addEventListener('click', saveUser);
+  document.getElementById('btn-save-edit-user').addEventListener('click', saveEditUser);
+
+  document.getElementById('btn-back-to-list').addEventListener('click', () => navigateTo('preventive'));
+  document.getElementById('btn-new-entry').addEventListener('click', () => {
+    const form = document.getElementById('entry-form');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    document.getElementById('entry-date').value = new Date().toISOString().split('T')[0];
+  });
+  document.getElementById('btn-cancel-entry').addEventListener('click', () => {
+    document.getElementById('entry-form').style.display = 'none';
+  });
+  document.getElementById('btn-save-entry').addEventListener('click', saveEntry);
+  document.getElementById('btn-save-edit-task').addEventListener('click', saveEditTask);
+}
+
+async function navigateTo(page) {
+  document.querySelectorAll('.nav-item').forEach(item =>
+    item.classList.toggle('active', item.dataset.page === page)
+  );
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+
+  if      (page === 'curative')   await loadCurativePage();
+  else if (page === 'preventive') await loadPreventivePage();
+  else if (page === 'users')      await loadUsersPage();
+}
+
+// ============ KURATÍV OLDAL ============
+async function loadCurativePage() {
+  updateMonthDisplay();
+  await loadCalendar();
+}
+
+function updateMonthDisplay() {
+  document.getElementById('current-month').textContent =
+    currentYear + '. ' + MONTHS_HU[currentMonth];
+}
+
+function changeMonth(delta) {
+  currentMonth += delta;
+  if (currentMonth > 12) { currentMonth = 1;  currentYear++; }
+  else if (currentMonth < 1) { currentMonth = 12; currentYear--; }
+  updateMonthDisplay();
+  loadCalendar();
+}
+
+async function loadCalendar() {
+  const grid = document.getElementById('calendar-grid');
+  grid.innerHTML = '';
+
+  const firstDay    = new Date(currentYear, currentMonth - 1, 1);
+  const lastDay     = new Date(currentYear, currentMonth, 0);
+  const daysInMonth = lastDay.getDate();
+
+  let startDay = firstDay.getDay();
+  startDay = startDay === 0 ? 6 : startDay - 1;
+
+  const prevDays = new Date(currentYear, currentMonth - 1, 0).getDate();
+
+  const calendarDataJson = await runAsync('getCalendarDataJson', currentYear, currentMonth);
+  const calendarData     = calendarDataJson ? JSON.parse(calendarDataJson) : {};
+  const filterMain       = document.getElementById('filter-zone-calendar').value;
+
+  const today          = new Date();
+  const isCurrentMonth = today.getFullYear() === currentYear && today.getMonth() + 1 === currentMonth;
+  const todayDate      = today.getDate();
+
+  for (let i = startDay - 1; i >= 0; i--) grid.appendChild(createDayCell(prevDays - i, true));
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const isToday  = isCurrentMonth && day === todayDate;
+    const tasks    = calendarData[day] || [];
+    const filtered = filterMain
+      ? tasks.filter(t => zoneMatchesFilter(t.asset_zone || '', filterMain))
+      : tasks;
+    grid.appendChild(createDayCell(day, false, isToday, filtered));
+  }
+
+  const remaining = 42 - grid.children.length;
+  for (let i = 1; i <= remaining; i++) grid.appendChild(createDayCell(i, true));
+}
+
+function createDayCell(day, isOtherMonth, isToday = false, tasks = []) {
+  const cell = document.createElement('div');
+  cell.className = 'calendar-day';
+  if (isOtherMonth) cell.classList.add('other-month');
+  if (isToday)      cell.classList.add('today');
+
+  const dayNum = document.createElement('div');
+  dayNum.className = 'day-number' + (isToday ? ' today' : '');
+  dayNum.textContent = day;
+  cell.appendChild(dayNum);
+
+  tasks.slice(0, 3).forEach(task => {
+    const el = document.createElement('div');
+    el.className = 'calendar-task type-' + (task.asset_type || '').toLowerCase();
+    el.textContent = task.asset_id + ' ' + task.category;
+    el.title = task.description;
+    el.addEventListener('click', () => showAssetDetail(task.asset_id));
+    cell.appendChild(el);
+  });
+
+  if (tasks.length > 3) {
+    const more = document.createElement('div');
+    more.className = 'calendar-task';
+    more.style.cssText = 'background:#f3f4f6;color:#6b7280';
+    more.textContent = '+' + (tasks.length - 3) + ' további';
+    cell.appendChild(more);
+  }
+  return cell;
+}
+
+async function openNewTaskModal() {
+  const assets = await runAsync('getAllAssetsForDropdown');
+  const select = document.getElementById('task-asset');
+  select.innerHTML = '<option value="">Válassz eszközt...</option>';
+  assets.forEach(asset => {
+    const opt = document.createElement('option');
+    opt.value = asset.asset_id;
+    opt.textContent = asset.asset_id + ' - ' + asset.name;
+    select.appendChild(opt);
+  });
+  document.getElementById('task-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('modal-new-task').classList.add('active');
+}
+
+async function saveTask() {
+  const assetId     = document.getElementById('task-asset').value;
+  const category    = document.getElementById('task-category').value;
+  const date        = document.getElementById('task-date').value;
+  const description = document.getElementById('task-description').value;
+  const photo       = document.getElementById('task-photo').value;
+
+  if (!assetId || !category || !date || !description) {
+    showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return;
+  }
+  showLoading();
+  try {
+    await runAsync('createTask', { asset_id: assetId, task_type: 'kuratív', category, completed_at: date, description, photo_link: photo });
+    showToast('Feladat sikeresen mentve!', 'success');
+    document.getElementById('modal-new-task').classList.remove('active');
+    document.getElementById('task-description').value = '';
+    document.getElementById('task-photo').value = '';
+    await loadCalendar();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ PREVENTÍV OLDAL ============
+async function loadPreventivePage() {
+  showLoading();
+  try {
+    const dataJson = await runAsync('getInitialDataJson');
+    const data     = dataJson ? JSON.parse(dataJson) : null;
+    if (data) { cachedAssets = data.assets || []; cachedStats = data.stats || {}; }
+    renderPreventivePage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+function renderPreventivePage() {
+  document.getElementById('stat-total').textContent       = cachedStats.total               || 0;
+  document.getElementById('stat-due').textContent         = cachedStats.due_soon            || 0;
+  document.getElementById('stat-overdue').textContent     = cachedStats.overdue             || 0;
+  document.getElementById('stat-completed').textContent   = cachedStats.completed_this_month || 0;
+
+  const filterMain   = document.getElementById('filter-main-zone').value   || '';
+  const filterSub    = document.getElementById('filter-sub-zone').value    || '';
+  const filterType   = document.getElementById('filter-type').value        || '';
+  const filterStatus = document.getElementById('filter-status').value      || '';
+  const filterSearch = document.getElementById('search-assets').value      || '';
+
+  let assets = [...cachedAssets];
+
+  // Terület szűrés
+  if (filterMain) {
+    assets = assets.filter(a => zoneMatchesFilter(a.zone || '', filterMain));
+    if (filterSub) assets = assets.filter(a => {
+      const parsed = parseZone(a.zone || '');
+      return parsed.sub === filterSub;
+    });
+  }
+
+  if (filterType)              assets = assets.filter(a => a.type === filterType);
+  if (filterStatus === 'due')  assets = assets.filter(a => a.status === 'overdue' || a.status === 'due_soon');
+  if (filterStatus === 'ok')   assets = assets.filter(a => a.status === 'ok');
+  if (filterSearch) {
+    const s = filterSearch.toLowerCase();
+    assets = assets.filter(a =>
+      (a.asset_id || '').toLowerCase().includes(s) ||
+      (a.name     || '').toLowerCase().includes(s)
+    );
+  }
+
+  assets.sort((a, b) => {
+    const o = { overdue: 0, due_soon: 1, ok: 2 };
+    if (o[a.status] !== o[b.status]) return o[a.status] - o[b.status];
+    return (a.days_until || 999) - (b.days_until || 999);
+  });
+
+  const tbody = document.getElementById('assets-tbody');
+  tbody.innerHTML = '';
+
+  if (assets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:40px;">Nincs találat</td></tr>';
+    return;
+  }
+
+  assets.forEach(asset => {
+    const tr = document.createElement('tr');
+    const zoneDisplay = escapeHtml(asset.zone || '-');
+
+    const cells = `
+      <td class="asset-id">${escapeHtml(asset.asset_id)}</td>
+      <td>
+        <div class="asset-name">${escapeHtml(asset.name)}</div>
+        <div class="asset-zone">${zoneDisplay}</div>
+      </td>
+      <td>${escapeHtml(asset.type)}</td>
+      <td style="color:${asset.status === 'overdue' ? 'var(--danger)' : asset.status === 'due_soon' ? 'var(--warning)' : 'inherit'};
+                 font-weight:${asset.status !== 'ok' ? '500' : 'normal'}">
+        ${asset.next_maintenance || '-'}
+      </td>
+      <td>${getStatusBadge(asset.status, asset.days_until)}</td>`;
+
+    if (currentUser && currentUser.role === 'admin') {
+      tr.innerHTML = cells + `
+        <td style="display:flex;gap:6px;align-items:center;">
+          <button class="btn btn-sm btn-secondary" title="Szerkesztés" data-edit-asset="${escapeHtml(asset.asset_id)}">✏️</button>
+          <span class="clickable" style="color:var(--text-secondary);padding:4px 8px;"
+                data-detail-asset="${escapeHtml(asset.asset_id)}">→</span>
+        </td>`;
+    } else {
+      tr.innerHTML = cells + `<td style="color:var(--text-secondary)">→</td>`;
+      tr.classList.add('clickable');
+      tr.addEventListener('click', () => showAssetDetail(asset.asset_id));
+    }
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('[data-edit-asset]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEditAssetModal(btn.dataset.editAsset);
+    });
+  });
+  tbody.querySelectorAll('[data-detail-asset]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showAssetDetail(btn.dataset.detailAsset);
+    });
+  });
+}
+
+function getStatusBadge(status, daysUntil) {
+  if (status === 'overdue')  return '<span class="badge badge-danger">Késésben</span>';
+  if (status === 'due_soon') return `<span class="badge badge-warning">${daysUntil} nap</span>`;
+  return '<span class="badge badge-success">Rendben</span>';
+}
+
+// ============ ESZKÖZ LÉTREHOZÁS ============
+async function saveAsset() {
+  const assetId  = document.getElementById('asset-id').value.trim();
+  const name     = document.getElementById('asset-name').value.trim();
+  const type     = document.getElementById('asset-type').value;
+  const mainZone = document.getElementById('asset-main-zone').value;
+  const subZone  = document.getElementById('asset-sub-zone') ? document.getElementById('asset-sub-zone').value : '';
+  const cycleMonths = parseInt(document.getElementById('asset-cycle-months').value) || 0;
+  const drive    = document.getElementById('asset-drive').value.trim();
+
+  const subs = ZONE_STRUCTURE[mainZone] || [];
+  if (!assetId || !name || !type || !mainZone) {
+    showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return;
+  }
+  if (subs.length > 0 && !subZone) {
+    showToast('Kérlek válassz alterületet!', 'warning'); return;
+  }
+
+  const zone = buildZoneString(mainZone, subZone);
+
+  showLoading();
+  try {
+    await runAsync('createAsset', { asset_id: assetId, name, type, zone, cycle_days: cycleMonths, drive_link: drive });
+    showToast('Eszköz sikeresen létrehozva!', 'success');
+    document.getElementById('modal-new-asset').classList.remove('active');
+    ['asset-id','asset-name','asset-drive'].forEach(id => document.getElementById(id).value = '');
+    setSelectValue('asset-cycle-months', '3');
+    document.getElementById('asset-main-zone').value = '';
+    document.getElementById('asset-sub-zone-group').style.display = 'none';
+    await refreshData();
+    renderPreventivePage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ ESZKÖZ SZERKESZTÉS ============
+function openEditAssetModal(assetId) {
+  const asset = cachedAssets.find(a => a.asset_id === assetId);
+  if (!asset) { showToast('Eszköz nem található a cache-ben', 'error'); return; }
+
+  const parsed = parseZone(asset.zone || '');
+
+  document.getElementById('edit-asset-id').value    = asset.asset_id;
+  document.getElementById('edit-asset-name').value  = asset.name;
+  setSelectValue('edit-asset-cycle-months', String(asset.cycle_months || 0));
+  document.getElementById('edit-asset-drive').value = asset.drive_link || '';
+  setSelectValue('edit-asset-type', asset.type);
+
+  // Főterület beállítása
+  setSelectValue('edit-asset-main-zone', parsed.main);
+
+  // Alterület feltöltése + beállítása
+  fillSubZones(parsed.main, 'edit-asset-sub-zone', 'edit-asset-sub-zone-group', parsed.sub);
+
+  document.getElementById('modal-edit-asset').classList.add('active');
+}
+
+async function saveEditAsset() {
+  const assetId  = document.getElementById('edit-asset-id').value;
+  const name     = document.getElementById('edit-asset-name').value.trim();
+  const type     = document.getElementById('edit-asset-type').value;
+  const mainZone = document.getElementById('edit-asset-main-zone').value;
+  const subEl    = document.getElementById('edit-asset-sub-zone');
+  const subZone  = subEl ? subEl.value : '';
+  const cycleMonths = parseInt(document.getElementById('edit-asset-cycle-months').value) || 0;
+  const driveLink = document.getElementById('edit-asset-drive').value.trim();
+
+  const subs = ZONE_STRUCTURE[mainZone] || [];
+  if (!name || !type || !mainZone) {
+    showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return;
+  }
+  if (subs.length > 0 && !subZone) {
+    showToast('Kérlek válassz alterületet!', 'warning'); return;
+  }
+
+  const zone = buildZoneString(mainZone, subZone);
+
+  showLoading();
+  try {
+    await runAsync('updateAsset', assetId, { name, type, zone, cycle_days: cycleMonths, drive_link: driveLink });
+    showToast('Eszköz sikeresen frissítve!', 'success');
+    document.getElementById('modal-edit-asset').classList.remove('active');
+    await refreshData();
+    renderPreventivePage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+async function deleteAssetConfirm() {
+  const assetId = document.getElementById('edit-asset-id').value;
+  const asset   = cachedAssets.find(a => a.asset_id === assetId);
+  const name    = asset ? asset.name : assetId;
+  if (!confirm(`Biztosan törölni szeretnéd ezt az eszközt?\n${assetId} - ${name}\n\nAz összes korábbi bejegyzés megmarad.`)) return;
+
+  showLoading();
+  try {
+    await runAsync('deleteAsset', assetId);
+    showToast('Eszköz törölve!', 'success');
+    document.getElementById('modal-edit-asset').classList.remove('active');
+    await refreshData();
+    renderPreventivePage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+async function deleteTaskConfirm(taskId, category, date) {
+  if (!confirm(`Biztosan törölni szeretnéd ezt a bejegyzést?\n${category} — ${date}`)) return;
+  showLoading();
+  try {
+    await runAsync('deleteTask', taskId);
+    showToast('Bejegyzés törölve!', 'success');
+    await refreshData();
+    await showAssetDetail(currentAssetId);
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ ESD MÉRÉSI FORM ============
+function renderEsdFields() {
+  const asset     = cachedAssets.find(a => a.asset_id === currentAssetId);
+  const assetType = asset ? asset.type : '';
+  const config    = ESD_FIELDS[assetType];
+
+  const form      = document.getElementById('esd-measurement-form');
+  const descGroup = document.getElementById('entry-description-group');
+  const taskType  = document.getElementById('entry-task-type').value;
+
+  if (taskType !== 'ESD mérés' || !config) {
+    form.style.display      = 'none';
+    descGroup.style.display = 'block';
+    return;
+  }
+
+  form.style.display      = 'block';
+  descGroup.style.display = 'none';
+
+  const container = document.getElementById('esd-fields-container');
+  container.innerHTML = '';
+
+  // Fix mezők
+  if (config.fixed.length > 0) {
+    const title = document.createElement('div');
+    title.className   = 'esd-section-title';
+    title.textContent = 'Mérési értékek';
+    container.appendChild(title);
+
+    config.fixed.forEach(field => {
+      const row = document.createElement('div');
+      row.className = 'esd-field-row';
+      row.innerHTML = `
+        <div class="esd-field-label">
+          <span>${field.label}</span>
+          ${field.limit ? `<span class="esd-limit">${field.limit}</span>` : ''}
+          ${field.optional ? '<span class="esd-optional">(opcionális)</span>' : ''}
+        </div>
+        <input type="text" class="input esd-fixed-value" id="esd-${field.id}"
+               data-label="${field.label}" placeholder="Mért érték"
+               ${field.optional ? '' : ''}>
+        <select class="esd-result-select" id="esd-pf-${field.id}" onchange="updateResultColor(this)">
+          <option value="">-</option>
+          <option value="OK">✓ OK</option>
+          <option value="NOK">✗ NOK</option>
+        </select>`;
+      container.appendChild(row);
+    });
+  }
+
+  // Dinamikus sorok
+  if (config.dynamic) {
+    const dynTitle = document.createElement('div');
+    dynTitle.className   = 'esd-section-title';
+    dynTitle.textContent = 'További mérések';
+    container.appendChild(dynTitle);
+
+    const dynContainer = document.createElement('div');
+    dynContainer.id = 'esd-dynamic-rows';
+    container.appendChild(dynContainer);
+    addDynamicEsdRow(dynContainer);
+
+    const addBtn = document.createElement('button');
+    addBtn.type      = 'button';
+    addBtn.className = 'btn btn-secondary btn-sm esd-add-btn';
+    addBtn.textContent = '+ Sor hozzáadása';
+    addBtn.addEventListener('click', () => addDynamicEsdRow(dynContainer));
+    container.appendChild(addBtn);
+  }
+}
+
+function addDynamicEsdRow(container) {
+  const uid = Date.now();
+  const row = document.createElement('div');
+  row.className = 'esd-dynamic-row';
+  row.innerHTML = `
+    <input type="text" class="input esd-dyn-label" placeholder="Megnevezés">
+    <input type="text" class="input esd-dyn-value" placeholder="Mért érték">
+    <select class="esd-result-select" onchange="updateResultColor(this)">
+      <option value="">-</option>
+      <option value="OK">✓ OK</option>
+      <option value="NOK">✗ NOK</option>
+    </select>
+    <button type="button" class="btn btn-sm"
+            style="color:var(--danger);background:none;border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer;width:32px;height:38px;"
+            onclick="this.closest('.esd-dynamic-row').remove()">×</button>`;
+  container.appendChild(row);
+}
+
+function updateResultColor(select) {
+  select.className = 'esd-result-select';
+  if (select.value === 'OK')  select.classList.add('ok');
+  if (select.value === 'NOK') select.classList.add('nok');
+}
+
+function collectEsdData() {
+  const lines  = [];
+  let hasNok   = false;
+
+  // Fix mezők
+  document.querySelectorAll('.esd-fixed-value').forEach(input => {
+    const label  = input.dataset.label;
+    const value  = input.value.trim();
+    const pfSel  = document.getElementById('esd-pf-' + input.id.replace('esd-', ''));
+    const pf     = pfSel ? pfSel.value : '';
+    if (value || pf) {
+      lines.push(`${label}: ${value || '-'} [${pf || '-'}]`);
+      if (pf === 'NOK') hasNok = true;
+    }
+  });
+
+  // Dinamikus sorok
+  document.querySelectorAll('.esd-dynamic-row').forEach(row => {
+    const label = row.querySelector('.esd-dyn-label').value.trim();
+    const value = row.querySelector('.esd-dyn-value').value.trim();
+    const pf    = row.querySelector('.esd-result-select').value;
+    if (label || value) {
+      lines.push(`${label || '?'}: ${value || '-'} [${pf || '-'}]`);
+      if (pf === 'NOK') hasNok = true;
+    }
+  });
+
+  return {
+    description: lines.join('\n'),
+    hasNok: hasNok
+  };
+}
+
+let editingTaskId = null;
+
+function openEditTaskModal(task) {
+  editingTaskId = task.task_id;
+
+  setSelectValue('edit-task-type', task.task_type);
+
+  // Kategória select feltöltése
+  const catSelect = document.getElementById('edit-task-category');
+  catSelect.innerHTML = '';
+  cachedTaskCategories.forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat; opt.textContent = cat;
+    catSelect.appendChild(opt);
+  });
+  setSelectValue('edit-task-category', task.category);
+
+  // Dátum visszakonvertálás (yyyy.MM.dd → yyyy-MM-dd)
+  const dateParts = (task.completed_at || '').split('.');
+  document.getElementById('edit-task-date').value =
+    dateParts.length === 3 ? `${dateParts[0]}-${dateParts[1]}-${dateParts[2]}` : '';
+
+  document.getElementById('edit-task-description').value = task.description || '';
+  document.getElementById('edit-task-photo').value       = task.photo_link  || '';
+
+  document.getElementById('modal-edit-task').classList.add('active');
+}
+
+async function saveEditTask() {
+  const type        = document.getElementById('edit-task-type').value;
+  const category    = document.getElementById('edit-task-category').value;
+  const date        = document.getElementById('edit-task-date').value;
+  const description = document.getElementById('edit-task-description').value.trim();
+  const photo       = document.getElementById('edit-task-photo').value.trim();
+
+  if (!category || !date || !description) {
+    showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return;
+  }
+
+  showLoading();
+  try {
+    await runAsync('updateTask', editingTaskId, { task_type: type, category, completed_at: date, description, photo_link: photo });
+    showToast('Bejegyzés sikeresen frissítve!', 'success');
+    document.getElementById('modal-edit-task').classList.remove('active');
+    await refreshData();
+    await showAssetDetail(currentAssetId);
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ ESZKÖZ RÉSZLETEK ============
+async function showAssetDetail(assetId) {
+  currentAssetId = assetId;
+  showLoading();
+  try {
+    let asset = cachedAssets.find(a => a.asset_id === assetId);
+    if (!asset) asset = await runAsync('getAssetById', assetId);
+    if (!asset) { showToast('Eszköz nem található: ' + assetId, 'error'); hideLoading(); return; }
+
+    document.getElementById('asset-detail-title').textContent =
+      asset.asset_id + ' - ' + asset.name;
+    document.getElementById('asset-detail-subtitle').textContent =
+      (asset.zone || '-') + ' · Létrehozva: ' +
+      (asset.created_at ? new Date(asset.created_at).toLocaleDateString('hu-HU') : '-');
+
+    // Edit gomb (admin)
+    const headerDiv   = document.querySelector('#page-asset-detail .page-header > div:first-child');
+    const existingBtn = document.getElementById('btn-edit-current-asset');
+    if (existingBtn) existingBtn.remove();
+
+    if (currentUser && currentUser.role === 'admin') {
+      const editBtn     = document.createElement('button');
+      editBtn.id        = 'btn-edit-current-asset';
+      editBtn.className = 'btn btn-secondary btn-sm';
+      editBtn.textContent = '✏️ Szerkesztés';
+      editBtn.addEventListener('click', () => {
+        // Ha nincs cache-ben, betölti a szerverről és úgy nyitja meg
+        if (!cachedAssets.find(a => a.asset_id === assetId)) {
+          cachedAssets.push(asset); // ideiglenesen beleteszi
+        }
+        openEditAssetModal(assetId);
+      });
+      headerDiv.appendChild(editBtn);
+    }
+
+    document.getElementById('asset-info-cards').innerHTML = `
+      <div class="info-card">
+        <div class="info-card-label">Típus</div>
+        <div class="info-card-value">${escapeHtml(asset.type)}</div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">Következő karbantartás</div>
+        <div class="info-card-value ${asset.status === 'overdue' ? 'danger' : ''}">
+          ${asset.next_maintenance || '-'}${asset.status === 'overdue' ? ' (késésben)' : ''}
+        </div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">Karbantartási ciklus</div>
+        <div class="info-card-value">${asset.cycle_days || 30} nap</div>
+      </div>`;
+
+    const driveCard = document.getElementById('drive-link-card');
+    if (asset.drive_link) {
+      driveCard.style.display = 'flex';
+      document.getElementById('drive-url').textContent = asset.drive_link.substring(0, 50) + '...';
+      document.getElementById('drive-link-btn').href   = asset.drive_link;
+    } else {
+      driveCard.style.display = 'none';
+    }
+
+    const tasksJson   = await runAsync('getTasksByAssetJson', assetId);
+    const tasks       = tasksJson ? JSON.parse(tasksJson) : [];
+    const historyList = document.getElementById('history-list');
+
+    if (!tasks || tasks.length === 0) {
+      historyList.innerHTML = '<div class="history-empty">Még nincsenek bejegyzések</div>';
+    } else {
+      historyList.innerHTML = '';
+      tasks.forEach(task => {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        item.innerHTML = `
+          <div class="history-header">
+            <div class="history-title">
+              <span class="badge ${task.task_type === 'preventív' ? 'badge-success' : 'badge-warning'}">
+                ${task.task_type === 'preventív' ? 'Preventív' : 'Kuratív'}
+              </span>
+              <span>${escapeHtml(task.category)}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="history-date">${task.completed_at}</span>
+              ${currentUser && currentUser.role === 'admin' ? `
+                <button class="btn btn-sm btn-secondary" data-edit-task="${task.task_id}" title="Bejegyzés szerkesztése">✏️</button>
+                <button class="btn btn-sm btn-danger" data-delete-task="${task.task_id}" title="Bejegyzés törlése">🗑</button>
+              ` : ''}
+            </div>
+          </div>
+          <div class="history-description">${escapeHtml(task.description)}</div>
+          <div class="history-meta">
+            <span>${escapeHtml(task.completed_by)}</span>
+            ${task.photo_link ? `<a href="${escapeHtml(task.photo_link)}" target="_blank">📷 Fotók</a>` : ''}
+          </div>`;
+
+        if (currentUser && currentUser.role === 'admin') {
+          item.querySelector('[data-delete-task]').addEventListener('click', () =>
+            deleteTaskConfirm(task.task_id, task.category, task.completed_at)
+          );
+          item.querySelector('[data-edit-task]').addEventListener('click', () =>
+            openEditTaskModal(task)
+          );
+        }
+        historyList.appendChild(item);
+      });
+    }
+
+    document.getElementById('entry-form').style.display            = 'none';
+    document.getElementById('entry-description').value             = '';
+    document.getElementById('entry-photo').value                   = '';
+    document.getElementById('entry-notes').value                   = '';
+    document.getElementById('entry-task-type').value               = 'preventív';
+    document.getElementById('esd-measurement-form').style.display  = 'none';
+    document.getElementById('entry-description-group').style.display = 'block';
+
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-asset-detail').classList.add('active');
+
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+async function saveEntry() {
+  const taskType = document.getElementById('entry-task-type').value;
+  const category = document.getElementById('entry-category').value;
+  const date     = document.getElementById('entry-date').value;
+  const notes    = document.getElementById('entry-notes').value.trim();
+  const photo    = document.getElementById('entry-photo').value.trim();
+
+  let fullDescription = '';
+
+  if (taskType === 'ESD mérés') {
+    const esdData = collectEsdData();
+    if (!esdData.description && !notes) {
+      showToast('Adj meg legalább egy mérési értéket!', 'warning'); return;
+    }
+    fullDescription = esdData.description;
+    if (esdData.hasNok) fullDescription = '⚠️ NOK mérés!\n' + fullDescription;
+    if (notes)          fullDescription += '\n\nMegjegyzés: ' + notes;
+  } else {
+    const description = document.getElementById('entry-description').value.trim();
+    if (!category || !date || !description) {
+      showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return;
+    }
+    fullDescription = description;
+    if (notes) fullDescription += '\n\nMegjegyzés: ' + notes;
+  }
+
+  if (!date) { showToast('Dátum megadása kötelező!', 'warning'); return; }
+
+  showLoading();
+  try {
+    await runAsync('createTask', {
+      asset_id:    currentAssetId,
+      task_type:   taskType,
+      category:    taskType === 'ESD mérés' ? 'ESD mérés' : category,
+      completed_at: date,
+      description: fullDescription,
+      photo_link:  photo
+    });
+    showToast('Bejegyzés sikeresen mentve!', 'success');
+    await refreshData();
+    await showAssetDetail(currentAssetId);
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ USERS OLDAL ============
+async function loadUsersPage() {
+  showLoading();
+  try {
+    const users = await runAsync('getUsers');
+    const tbody = document.getElementById('users-tbody');
+    tbody.innerHTML = users.map(user => `
+      <tr>
+        <td>${escapeHtml(user.email)}</td>
+        <td>${escapeHtml(user.name)}</td>
+        <td><span class="badge ${user.role === 'admin' ? 'badge-info' : 'badge-success'}">
+          ${user.role === 'admin' ? 'Admin' : 'Readonly'}
+        </span></td>
+        <td>${user.notify ? '✓ Igen' : 'Nem'}</td>
+        <td style="display:flex;gap:6px;">
+          <button class="btn btn-sm btn-secondary" data-edit-user="${escapeHtml(user.email)}">✏️</button>
+          <button class="btn btn-sm btn-secondary" onclick="deleteUserConfirm('${escapeHtml(user.email)}')">Törlés</button>
+        </td>
+      </tr>`).join('');
+
+    tbody.querySelectorAll('[data-edit-user]').forEach(btn => {
+      btn.addEventListener('click', () => openEditUserModal(btn.dataset.editUser));
+    });
+    window._cachedUsers = users;
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+async function saveUser() {
+  const email  = document.getElementById('user-email').value.trim();
+  const name   = document.getElementById('user-name-input').value.trim();
+  const role   = document.getElementById('user-role-select').value;
+  const notify = document.getElementById('user-notify').value === 'true';
+  if (!email || !name) { showToast('Kérlek töltsd ki a kötelező mezőket!', 'warning'); return; }
+  showLoading();
+  try {
+    await runAsync('createUser', { email, name, role, notify });
+    showToast('Felhasználó sikeresen létrehozva!', 'success');
+    document.getElementById('modal-new-user').classList.remove('active');
+    document.getElementById('user-email').value      = '';
+    document.getElementById('user-name-input').value = '';
+    await loadUsersPage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+function openEditUserModal(email) {
+  const users = window._cachedUsers || [];
+  const user  = users.find(u => u.email === email);
+  if (!user) { showToast('Felhasználó nem található', 'error'); return; }
+  editingUserEmail = email;
+  document.getElementById('edit-user-email').value = user.email;
+  document.getElementById('edit-user-name').value  = user.name;
+  setSelectValue('edit-user-role',   user.role);
+  setSelectValue('edit-user-notify', user.notify ? 'true' : 'false');
+  document.getElementById('modal-edit-user').classList.add('active');
+}
+
+async function saveEditUser() {
+  const name   = document.getElementById('edit-user-name').value.trim();
+  const role   = document.getElementById('edit-user-role').value;
+  const notify = document.getElementById('edit-user-notify').value === 'true';
+  if (!name) { showToast('A név nem lehet üres!', 'warning'); return; }
+  showLoading();
+  try {
+    await runAsync('updateUser', editingUserEmail, { name, role, notify });
+    showToast('Felhasználó sikeresen frissítve!', 'success');
+    document.getElementById('modal-edit-user').classList.remove('active');
+    await loadUsersPage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+async function deleteUserConfirm(email) {
+  if (!confirm('Biztosan törölni szeretnéd ezt a felhasználót?\n' + email)) return;
+  showLoading();
+  try {
+    await runAsync('deleteUser', email);
+    showToast('Felhasználó törölve!', 'success');
+    await loadUsersPage();
+  } catch (error) { showToast('Hiba: ' + error.message, 'error'); }
+  hideLoading();
+}
+
+// ============ CACHE FRISSÍTÉS ============
+async function refreshData() {
+  try {
+    await runAsync('clearCache');
+    const dataJson = await runAsync('getInitialDataJson');
+    const data = dataJson ? JSON.parse(dataJson) : null;
+    if (data) { cachedAssets = data.assets || []; cachedStats = data.stats || {}; }
+  } catch (e) { console.warn('refreshData error:', e); }
+}
+
+// ============ SEGÉD FUNKCIÓK ============
+function runAsync(functionName, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(reject)
+      [functionName](...args);
+  });
+}
+
+function setSelectValue(selectId, value) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === String(value)) { sel.selectedIndex = i; return; }
+  }
+}
+
+function showLoading() { document.getElementById('loading').classList.add('active'); }
+function hideLoading() { document.getElementById('loading').classList.remove('active'); }
+
+function showToast(message, type = 'success') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+}
+</script>
